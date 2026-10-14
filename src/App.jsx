@@ -10,6 +10,7 @@ import PromoHistoryCard from './components/PromoHistoryCard';
 import AiCopilotCard from './components/AiCopilotCard';
 import EconomicCalendarCard from './components/EconomicCalendarCard';
 import FloatingXauModal from './components/FloatingXauModal';
+import Footer from './components/Footer';
 
 import {
   fetchTreasuryLiveRate,
@@ -258,6 +259,9 @@ export default function App() {
           <EconomicCalendarCard />
         </div>
       </div>
+
+      {/* Dashboard Footer with Treasury Monitor Branding */}
+      <Footer />
 
       {/* Floating Action Button & Quick View Modal for XAUUSD */}
       <FloatingXauModal />

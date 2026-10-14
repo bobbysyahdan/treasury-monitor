@@ -29,14 +29,14 @@ export default function AiCopilotCard({ liveBuy, liveSell, usdRate, globalRates 
     try {
       const storedKey = localStorage.getItem('cuanmania_gemini_key');
       if (storedKey) setApiKey(storedKey);
-    } catch (e) {}
+    } catch (e) { }
   }, []);
 
   const handleKeySave = (val) => {
     setApiKey(val);
     try {
       localStorage.setItem('cuanmania_gemini_key', val);
-    } catch (e) {}
+    } catch (e) { }
   };
 
   useEffect(() => {
@@ -74,7 +74,7 @@ export default function AiCopilotCard({ liveBuy, liveSell, usdRate, globalRates 
 
     try {
       const context = getMarketContext();
-      const systemPrompt = `Kamu adalah asisten investasi Cuan Mania. Jawab singkat, padat, pakai bahasa Indonesia gaul/santai spt sob/cuy. Gunakan emoticon relevan (📈, 💰, 🤖, ⚠️, ✨). Fokus ke insight berharga dr data yg dikirim, hindari teori panjang lebar. Berikan saran logis beli, tahan, atau cicil.`;
+      const systemPrompt = `Kamu adalah asisten investasi. Jawab singkat, padat, pakai bahasa Indonesia gaul/santai spt sob/cuy. Gunakan emoticon relevan (📈, 💰, 🤖, ⚠️, ✨). Fokus ke insight berharga dr data yg dikirim, hindari teori panjang lebar. Berikan saran logis beli, tahan, atau cicil.`;
 
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${apiKey}`,
