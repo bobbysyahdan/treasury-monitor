@@ -50,12 +50,16 @@ export const isMarketOpen = () => {
 // Fetch live Treasury.id gold rate
 export const fetchTreasuryLiveRate = async () => {
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
     const res = await fetch(TREASURY_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
-      cache: 'no-store'
+      cache: 'no-store',
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
       if (data && data.data) {
@@ -68,17 +72,21 @@ export const fetchTreasuryLiveRate = async () => {
       }
     }
   } catch (err) {
-    console.warn('Direct Treasury API fetch failed, trying proxy...', err);
+    console.warn('Direct Treasury API fetch failed or timed out, trying proxy...', err);
   }
 
   // Fallback to Vite proxy
   try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
     const res = await fetch(TREASURY_PROXY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
-      cache: 'no-store'
+      cache: 'no-store',
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
       if (data && data.data) {
@@ -227,6 +235,45 @@ export const fetchChartData = async (timeframe) => {
 
 // Audio & Web Speech synthesis helper
 let audioCtx = null;
+
+// Initialize and unlock audio on first user gesture to comply with browser autoplay policies
+export const initAudioUnlock = () => {
+  if (typeof window === 'undefined') return;
+
+  const unlock = () => {
+    try {
+      if (!audioCtx) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) audioCtx = new AudioContextClass();
+      }
+      if (audioCtx && audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      if ('speechSynthesis' in window && window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+    } catch {}
+
+    ['click', 'pointerdown', 'touchstart', 'keydown'].forEach(evt => {
+      window.removeEventListener(evt, unlock);
+    });
+  };
+
+  ['click', 'pointerdown', 'touchstart', 'keydown'].forEach(evt => {
+    window.addEventListener(evt, unlock, { once: true, passive: true });
+  });
+
+  // Pre-load speech synthesis voices
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.getVoices();
+    if (window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = () => {
+        try { window.speechSynthesis.getVoices(); } catch {}
+      };
+    }
+  }
+};
+
 export const playBeep = (freq = 880, duration = 0.15, type = 'sine') => {
   try {
     if (!audioCtx) {
@@ -254,13 +301,13 @@ export const playBeep = (freq = 880, duration = 0.15, type = 'sine') => {
 };
 
 export const speakId = (text) => {
-  if (!('speechSynthesis' in window)) return;
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
   try {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'id-ID';
     u.rate = 1.05;
-    u.volume = 0.85;
+    u.volume = 0.95;
     const voices = window.speechSynthesis.getVoices();
     const idVoice = voices.find(v => /^id[-_]ID$/i.test(v.lang) || /^id/i.test(v.lang));
     if (idVoice) u.voice = idVoice;
@@ -269,3 +316,4 @@ export const speakId = (text) => {
     console.warn('Speech synthesis failed:', e);
   }
 };
+

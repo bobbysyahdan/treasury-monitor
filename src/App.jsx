@@ -21,6 +21,7 @@ import {
   fetchPromoHistory,
   speakId,
   playBeep,
+  initAudioUnlock,
   isMarketOpen
 } from './services/api';
 
@@ -34,14 +35,29 @@ export default function App() {
   const [updatedAt, setUpdatedAt] = useState('');
   const [isOnline, setIsOnline] = useState(false);
 
-  // Sound alert state
+  // Sound alert state - default AUTO ON saat dibuka
   const [soundEnabled, setSoundEnabled] = useState(() => {
     try {
-      return localStorage.getItem('cuanmania_sound') === '1';
+      const sessionVal = sessionStorage.getItem('cuanmania_sound');
+      if (sessionVal !== null) {
+        return sessionVal === '1';
+      }
+      // Default selalu aktif (auto ON) saat pertama kali dibuka
+      return true;
     } catch {
-      return false;
+      return true;
     }
   });
+
+  const soundEnabledRef = useRef(soundEnabled);
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  // Audio unlock listener untuk kebijakan autoplay browser
+  useEffect(() => {
+    initAudioUnlock();
+  }, []);
 
   // Data collections
   const [historyData, setHistoryData] = useState([]);
@@ -53,11 +69,16 @@ export default function App() {
   const [promoHistory, setPromoHistory] = useState([]);
 
   const isFirstLoad = useRef(true);
+  const liveBuyRef = useRef(0);
+  const liveSellRef = useRef(0);
+  const isFetchingTreasuryRef = useRef(false);
+  const isFetchingSecondaryRef = useRef(false);
 
   const toggleSound = () => {
     const nextVal = !soundEnabled;
     setSoundEnabled(nextVal);
     try {
+      sessionStorage.setItem('cuanmania_sound', nextVal ? '1' : '0');
       localStorage.setItem('cuanmania_sound', nextVal ? '1' : '0');
     } catch {}
     if (nextVal) {
@@ -66,65 +87,90 @@ export default function App() {
     }
   };
 
-  // Primary data fetcher function
-  const refreshAllData = async () => {
+  // 1. Fetch live Treasury buy & sell price super cepat (independen tanpa memblokir request lain)
+  const updateLivePrice = async () => {
+    if (isFetchingTreasuryRef.current) return;
+    isFetchingTreasuryRef.current = true;
     try {
-      // 1. Fetch live Treasury.id rate
       const treasuryRate = await fetchTreasuryLiveRate();
-      if (treasuryRate) {
+      if (treasuryRate && treasuryRate.buyingRate) {
         setIsOnline(true);
         setUpdatedAt(treasuryRate.updatedAt);
 
-        setLiveBuy((currentLiveBuy) => {
-          if (currentLiveBuy > 0 && treasuryRate.buyingRate !== currentLiveBuy) {
-            setPrevBuy(currentLiveBuy);
-            const delta = treasuryRate.buyingRate - currentLiveBuy;
-            setLiveDelta(delta);
+        const newBuy = treasuryRate.buyingRate;
+        const newSell = treasuryRate.sellingRate;
+        const prevB = liveBuyRef.current;
+        const prevS = liveSellRef.current;
 
-            // Trigger audio alerts if sound is enabled
-            if (soundEnabled && isMarketOpen() === 'PASAR LIVE') {
-              if (delta > 0) {
-                speakId('Harga naik');
-                playBeep(980, 0.2);
-              } else if (delta < 0) {
-                speakId('Harga turun');
-                playBeep(440, 0.2);
-              }
+        // Cek perubahan harga beli
+        if (prevB > 0 && newBuy !== prevB) {
+          const delta = newBuy - prevB;
+          setPrevBuy(prevB);
+          setLiveDelta(delta);
+
+          // Peringatan suara jika pasar live dan suara aktif
+          if (soundEnabledRef.current && isMarketOpen() === 'PASAR LIVE') {
+            if (delta > 0) {
+              speakId('Harga naik');
+              playBeep(980, 0.2);
+            } else if (delta < 0) {
+              speakId('Harga turun');
+              playBeep(440, 0.2);
             }
           }
-          return treasuryRate.buyingRate;
-        });
 
-        setLiveSell((currentLiveSell) => {
-          if (currentLiveSell > 0 && treasuryRate.sellingRate !== currentLiveSell) {
-            setPrevSell(currentLiveSell);
-          }
-          return treasuryRate.sellingRate;
-        });
+          // Sinkronkan riwayat tabel & grafik agar data terbaru langsung masuk
+          refreshSecondaryData();
+        }
+
+        if (prevS > 0 && newSell !== prevS) {
+          setPrevSell(prevS);
+        }
+
+        liveBuyRef.current = newBuy;
+        liveSellRef.current = newSell;
+        setLiveBuy(newBuy);
+        setLiveSell(newSell);
       }
+    } catch (err) {
+      console.warn('Gagal sinkronisasi harga live Treasury:', err);
+    } finally {
+      isFetchingTreasuryRef.current = false;
+    }
+  };
 
-      // 2. Fetch Gold History from Firebase
-      const goldHist = await fetchGoldHistory(50);
-      if (goldHist && goldHist.length > 0) {
-        setHistoryData(goldHist);
-        // Fallback for live price on first load if treasury API was slow
-        if (isFirstLoad.current && (!treasuryRate || !treasuryRate.buyingRate)) {
-          const top = goldHist[0];
+  // 2. Refresh data sekunder (riwayat emas, USD, pasar global, admin settings, promo)
+  const refreshSecondaryData = async () => {
+    if (isFetchingSecondaryRef.current) return;
+    isFetchingSecondaryRef.current = true;
+    try {
+      const [goldRes, usdRes, gRatesRes, admRes, promoRes] = await Promise.allSettled([
+        fetchGoldHistory(50),
+        fetchUsdHistory(),
+        fetchGlobalRates(),
+        fetchAdminSettings(),
+        fetchPromoHistory()
+      ]);
+
+      if (goldRes.status === 'fulfilled' && goldRes.value && goldRes.value.length > 0) {
+        setHistoryData(goldRes.value);
+        if (isFirstLoad.current && !liveBuyRef.current) {
+          const top = goldRes.value[0];
           if (top) {
             setLiveBuy(top.buy);
             setLiveSell(top.sell);
+            liveBuyRef.current = top.buy;
+            liveSellRef.current = top.sell;
             setUpdatedAt(top.datetime || 'Database Live');
             setIsOnline(true);
           }
         }
       }
 
-      // 3. Fetch USD History from Firebase (Google Finance feed)
-      const usdHist = await fetchUsdHistory();
-      if (usdHist && usdHist.length > 0) {
-        setUsdHistory(usdHist);
-        const latest = usdHist[0];
-        const prev = usdHist[1] || latest;
+      if (usdRes.status === 'fulfilled' && usdRes.value && usdRes.value.length > 0) {
+        setUsdHistory(usdRes.value);
+        const latest = usdRes.value[0];
+        const prev = usdRes.value[1] || latest;
         const curRate = parseFloat(latest.usd_idr);
         const prevRate = parseFloat(prev.usd_idr);
         if (!isNaN(curRate)) {
@@ -136,41 +182,117 @@ export default function App() {
         }
       }
 
-      // 4. Fetch Global Rates (AwesomeAPI)
-      const gRates = await fetchGlobalRates();
-      if (gRates) {
-        setGlobalRates(gRates);
+      if (gRatesRes.status === 'fulfilled' && gRatesRes.value) {
+        setGlobalRates(gRatesRes.value);
       }
 
-      // 5. Fetch Admin Settings
-      const adm = await fetchAdminSettings();
-      if (adm) {
-        setAdminSettings(adm);
+      if (admRes.status === 'fulfilled' && admRes.value) {
+        setAdminSettings(admRes.value);
       }
 
-      // 6. Fetch Promo History
-      const pHist = await fetchPromoHistory();
-      if (pHist && pHist.length > 0) {
-        setPromoHistory(pHist);
+      if (promoRes.status === 'fulfilled' && promoRes.value && promoRes.value.length > 0) {
+        setPromoHistory(promoRes.value);
       }
 
       isFirstLoad.current = false;
     } catch (err) {
-      console.error('Error during data refresh:', err);
+      console.warn('Gagal memuat data sekunder:', err);
+    } finally {
+      isFetchingSecondaryRef.current = false;
     }
   };
 
-  // Initial load and periodic interval
+  // Muat pertama kali
   useEffect(() => {
-    refreshAllData();
+    let ignore = false;
+    (async () => {
+      await updateLivePrice();
+      if (!ignore) {
+        await refreshSecondaryData();
+      }
+    })();
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
-    // Poll every 30 seconds
-    const interval = setInterval(() => {
-      refreshAllData();
-    }, 30000);
+  // Polling detak 5 detik untuk respon harga cepat
+  useEffect(() => {
+    const heartbeat = setInterval(() => {
+      updateLivePrice();
+    }, 5000);
 
-    return () => clearInterval(interval);
-  }, [soundEnabled]);
+    return () => clearInterval(heartbeat);
+  }, []);
+
+  // Sinkronisasi presisi setiap pergantian menit (Treasury merilis update rate di awal menit)
+  useEffect(() => {
+    let isMounted = true;
+    let minuteTimer = null;
+    let retryTimer1 = null;
+    let retryTimer2 = null;
+
+    const scheduleMinuteTurnSync = () => {
+      if (!isMounted) return;
+
+      const now = new Date();
+      const seconds = now.getSeconds();
+      const ms = now.getMilliseconds();
+
+      // Treasury.id server merilis harga sekitar detik 01 setiap menitnya.
+      // Kita targetkan tepat di detik 01.100 agar langsung dapat harga beli/jual terbaru tanpa terlambat.
+      let msToNextMinute = (60 - seconds) * 1000 - ms + 1100;
+      if (msToNextMinute < 300) {
+        msToNextMinute += 60000;
+      }
+
+      minuteTimer = setTimeout(async () => {
+        if (!isMounted) return;
+        await updateLivePrice();
+
+        // Follow-up retry pada detik +2.5s dan +5s jika server ada jeda cache origin
+        retryTimer1 = setTimeout(() => {
+          if (isMounted) updateLivePrice();
+        }, 2500);
+
+        retryTimer2 = setTimeout(() => {
+          if (isMounted) updateLivePrice();
+        }, 5000);
+
+        scheduleMinuteTurnSync();
+      }, msToNextMinute);
+    };
+
+    scheduleMinuteTurnSync();
+
+    return () => {
+      isMounted = false;
+      if (minuteTimer) clearTimeout(minuteTimer);
+      if (retryTimer1) clearTimeout(retryTimer1);
+      if (retryTimer2) clearTimeout(retryTimer2);
+    };
+  }, []);
+
+  // Polling data sekunder setiap 25 detik di latar belakang
+  useEffect(() => {
+    const secondaryInterval = setInterval(() => {
+      refreshSecondaryData();
+    }, 25000);
+
+    return () => clearInterval(secondaryInterval);
+  }, []);
+
+  // Segera update jika user berpindah tab dan kembali aktif
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        updateLivePrice();
+        refreshSecondaryData();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, []);
 
   const promoActive =
     adminSettings?.promo_status === true || adminSettings?.promo_status === 'true';
