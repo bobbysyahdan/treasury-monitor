@@ -19,6 +19,7 @@ import {
   fetchGlobalRates,
   fetchAdminSettings,
   fetchPromoHistory,
+  subscribeGoldLiveRate,
   speakId,
   playBeep,
   initAudioUnlock,
@@ -87,50 +88,61 @@ export default function App() {
     }
   };
 
-  // 1. Fetch live Treasury buy & sell price super cepat (independen tanpa memblokir request lain)
-  const updateLivePrice = async () => {
-    if (isFetchingTreasuryRef.current) return;
+  // Helper sentral untuk memproses pembaruan harga beli/jual secara real-time
+  const handlePriceRate = (rate) => {
+    if (!rate || !rate.buyingRate) return;
+    setIsOnline(true);
+    if (rate.updatedAt) setUpdatedAt(rate.updatedAt);
+
+    const newBuy = Number(rate.buyingRate);
+    const newSell = Number(rate.sellingRate);
+    const prevB = liveBuyRef.current;
+    const prevS = liveSellRef.current;
+
+    // Abaikan jika tidak ada perubahan sama sekali
+    if (prevB > 0 && newBuy === prevB && newSell === prevS) {
+      return;
+    }
+
+    // Cek perubahan harga beli
+    if (prevB > 0 && newBuy !== prevB) {
+      const delta = newBuy - prevB;
+      setPrevBuy(prevB);
+      setLiveDelta(delta);
+
+      // Peringatan suara jika pasar live dan suara aktif
+      if (soundEnabledRef.current && isMarketOpen() === 'PASAR LIVE') {
+        if (delta > 0) {
+          speakId('Harga naik');
+          playBeep(980, 0.2);
+        } else if (delta < 0) {
+          speakId('Harga turun');
+          playBeep(440, 0.2);
+        }
+      }
+
+      // Sinkronkan riwayat data sekunder agar tabel dan grafik terupdate
+      refreshSecondaryData();
+    }
+
+    if (prevS > 0 && newSell !== prevS) {
+      setPrevSell(prevS);
+    }
+
+    liveBuyRef.current = newBuy;
+    liveSellRef.current = newSell;
+    setLiveBuy(newBuy);
+    setLiveSell(newSell);
+  };
+
+  // 1. Fetch live Treasury buy & sell price (super cepat dengan fail-safe Firebase)
+  const updateLivePrice = async (force = false) => {
+    if (isFetchingTreasuryRef.current && !force) return;
     isFetchingTreasuryRef.current = true;
     try {
       const treasuryRate = await fetchTreasuryLiveRate();
       if (treasuryRate && treasuryRate.buyingRate) {
-        setIsOnline(true);
-        setUpdatedAt(treasuryRate.updatedAt);
-
-        const newBuy = treasuryRate.buyingRate;
-        const newSell = treasuryRate.sellingRate;
-        const prevB = liveBuyRef.current;
-        const prevS = liveSellRef.current;
-
-        // Cek perubahan harga beli
-        if (prevB > 0 && newBuy !== prevB) {
-          const delta = newBuy - prevB;
-          setPrevBuy(prevB);
-          setLiveDelta(delta);
-
-          // Peringatan suara jika pasar live dan suara aktif
-          if (soundEnabledRef.current && isMarketOpen() === 'PASAR LIVE') {
-            if (delta > 0) {
-              speakId('Harga naik');
-              playBeep(980, 0.2);
-            } else if (delta < 0) {
-              speakId('Harga turun');
-              playBeep(440, 0.2);
-            }
-          }
-
-          // Sinkronkan riwayat tabel & grafik agar data terbaru langsung masuk
-          refreshSecondaryData();
-        }
-
-        if (prevS > 0 && newSell !== prevS) {
-          setPrevSell(prevS);
-        }
-
-        liveBuyRef.current = newBuy;
-        liveSellRef.current = newSell;
-        setLiveBuy(newBuy);
-        setLiveSell(newSell);
+        handlePriceRate(treasuryRate);
       }
     } catch (err) {
       console.warn('Gagal sinkronisasi harga live Treasury:', err);
@@ -154,16 +166,15 @@ export default function App() {
 
       if (goldRes.status === 'fulfilled' && goldRes.value && goldRes.value.length > 0) {
         setHistoryData(goldRes.value);
-        if (isFirstLoad.current && !liveBuyRef.current) {
-          const top = goldRes.value[0];
-          if (top) {
-            setLiveBuy(top.buy);
-            setLiveSell(top.sell);
-            liveBuyRef.current = top.buy;
-            liveSellRef.current = top.sell;
-            setUpdatedAt(top.datetime || 'Database Live');
-            setIsOnline(true);
-          }
+        const top = goldRes.value[0];
+        if (top && top.buy && top.sell) {
+          handlePriceRate({
+            buyingRate: top.buy,
+            sellingRate: top.sell,
+            updatedAt: top.datetime || 'Database Live',
+            timestamp: top.timestamp,
+            raw: top
+          });
         }
       }
 
@@ -206,7 +217,7 @@ export default function App() {
   useEffect(() => {
     let ignore = false;
     (async () => {
-      await updateLivePrice();
+      await updateLivePrice(true);
       if (!ignore) {
         await refreshSecondaryData();
       }
@@ -216,21 +227,52 @@ export default function App() {
     };
   }, []);
 
-  // Polling detak 5 detik untuk respon harga cepat
+  // Realtime subscription ke Firebase Realtime Database via Server-Sent Events (SSE)
+  // Menjamin update harga langsung masuk ke client tanpa delay hitungan milidetik saat backend menulis data
+  useEffect(() => {
+    const unsubscribe = subscribeGoldLiveRate((rate) => {
+      handlePriceRate(rate);
+    });
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
+
+  // Polling detak 4 detik untuk memastikan koneksi selalu sinkron
   useEffect(() => {
     const heartbeat = setInterval(() => {
       updateLivePrice();
-    }, 5000);
+    }, 4000);
 
     return () => clearInterval(heartbeat);
   }, []);
 
-  // Sinkronisasi presisi setiap pergantian menit (Treasury merilis update rate di awal menit)
+  // Sinkronisasi presisi setiap pergantian menit (tepat di detik 00 setiap menit)
+  // Menjalankan pengecekan beruntun di detik :00 - :06 saat data baru dirilis server
   useEffect(() => {
     let isMounted = true;
     let minuteTimer = null;
-    let retryTimer1 = null;
-    let retryTimer2 = null;
+    let pulseTimers = [];
+
+    const clearPulseTimers = () => {
+      pulseTimers.forEach((t) => clearTimeout(t));
+      pulseTimers = [];
+    };
+
+    const triggerMinuteTurnPulse = () => {
+      if (!isMounted) return;
+      clearPulseTimers();
+
+      // Pengecekan beruntun di awal menit (:00.1s sampai :07s)
+      const pulseDelays = [0, 600, 1200, 1900, 2700, 3600, 4700, 6000, 7500];
+      pulseDelays.forEach((delay) => {
+        const timer = setTimeout(async () => {
+          if (!isMounted) return;
+          await updateLivePrice(true);
+        }, delay);
+        pulseTimers.push(timer);
+      });
+    };
 
     const scheduleMinuteTurnSync = () => {
       if (!isMounted) return;
@@ -239,26 +281,15 @@ export default function App() {
       const seconds = now.getSeconds();
       const ms = now.getMilliseconds();
 
-      // Treasury.id server merilis harga sekitar detik 01 setiap menitnya.
-      // Kita targetkan tepat di detik 01.100 agar langsung dapat harga beli/jual terbaru tanpa terlambat.
-      let msToNextMinute = (60 - seconds) * 1000 - ms + 1100;
-      if (msToNextMinute < 300) {
+      // Target tepat saat pergantian menit (:00.100)
+      let msToNextMinute = (60 - seconds) * 1000 - ms + 100;
+      if (msToNextMinute < 100) {
         msToNextMinute += 60000;
       }
 
-      minuteTimer = setTimeout(async () => {
+      minuteTimer = setTimeout(() => {
         if (!isMounted) return;
-        await updateLivePrice();
-
-        // Follow-up retry pada detik +2.5s dan +5s jika server ada jeda cache origin
-        retryTimer1 = setTimeout(() => {
-          if (isMounted) updateLivePrice();
-        }, 2500);
-
-        retryTimer2 = setTimeout(() => {
-          if (isMounted) updateLivePrice();
-        }, 5000);
-
+        triggerMinuteTurnPulse();
         scheduleMinuteTurnSync();
       }, msToNextMinute);
     };
@@ -268,16 +299,15 @@ export default function App() {
     return () => {
       isMounted = false;
       if (minuteTimer) clearTimeout(minuteTimer);
-      if (retryTimer1) clearTimeout(retryTimer1);
-      if (retryTimer2) clearTimeout(retryTimer2);
+      clearPulseTimers();
     };
   }, []);
 
-  // Polling data sekunder setiap 25 detik di latar belakang
+  // Polling data sekunder setiap 20 detik di latar belakang
   useEffect(() => {
     const secondaryInterval = setInterval(() => {
       refreshSecondaryData();
-    }, 25000);
+    }, 20000);
 
     return () => clearInterval(secondaryInterval);
   }, []);

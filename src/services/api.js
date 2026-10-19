@@ -47,11 +47,40 @@ export const isMarketOpen = () => {
   return 'PASAR LIVE';
 };
 
-// Fetch live Treasury.id gold rate
+// Fetch latest single rate from Firebase
+export const fetchGoldLatestRate = async () => {
+  try {
+    const res = await fetch(`${FIREBASE_BASE_URL}/gold_history.json?orderBy="timestamp"&limitToLast=1`, {
+      cache: 'no-store'
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && typeof data === 'object') {
+        const items = Object.values(data).filter(x => x && x.buy && x.sell);
+        if (items.length > 0) {
+          const top = items[items.length - 1];
+          return {
+            buyingRate: top.buy,
+            sellingRate: top.sell,
+            updatedAt: top.datetime || new Date().toLocaleTimeString('id-ID'),
+            timestamp: top.timestamp,
+            raw: top
+          };
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Gagal ambil data gold rate terbaru dari Firebase:', e);
+  }
+  return null;
+};
+
+// Fetch live Treasury.id gold rate (dengan fail-safe fallback kilat ke Firebase Realtime Database)
 export const fetchTreasuryLiveRate = async () => {
+  // 1. Direct fetch ke Treasury API (timeout cepat 1.2 detik agar tidak menghambat sinkronisasi menit)
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const timeoutId = setTimeout(() => controller.abort(), 1200);
     const res = await fetch(TREASURY_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -62,7 +91,7 @@ export const fetchTreasuryLiveRate = async () => {
     clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
-      if (data && data.data) {
+      if (data && data.data && data.data.buying_rate) {
         return {
           buyingRate: data.data.buying_rate,
           sellingRate: data.data.selling_rate,
@@ -71,14 +100,12 @@ export const fetchTreasuryLiveRate = async () => {
         };
       }
     }
-  } catch (err) {
-    console.warn('Direct Treasury API fetch failed or timed out, trying proxy...', err);
-  }
+  } catch {}
 
-  // Fallback to Vite proxy
+  // 2. Fallback ke Vite proxy (timeout 1.2 detik)
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const timeoutId = setTimeout(() => controller.abort(), 1200);
     const res = await fetch(TREASURY_PROXY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -89,7 +116,7 @@ export const fetchTreasuryLiveRate = async () => {
     clearTimeout(timeoutId);
     if (res.ok) {
       const data = await res.json();
-      if (data && data.data) {
+      if (data && data.data && data.data.buying_rate) {
         return {
           buyingRate: data.data.buying_rate,
           sellingRate: data.data.selling_rate,
@@ -98,10 +125,83 @@ export const fetchTreasuryLiveRate = async () => {
         };
       }
     }
-  } catch (proxyErr) {
-    console.error('All Treasury API fetch attempts failed:', proxyErr);
+  } catch {}
+
+  // 3. Fallback instan ke Firebase Realtime Database (selalu terupdate tiap menit tanpa delay)
+  const fbRate = await fetchGoldLatestRate();
+  if (fbRate) {
+    return fbRate;
   }
+
   return null;
+};
+
+// Subscribe ke Firebase Realtime Database via Server-Sent Events (SSE) untuk update tanpa delay
+export const subscribeGoldLiveRate = (callback) => {
+  if (typeof window === 'undefined' || !window.EventSource) return () => {};
+
+  let es = null;
+  let isClosed = false;
+
+  const connect = () => {
+    if (isClosed) return;
+    try {
+      es = new EventSource(`${FIREBASE_BASE_URL}/gold_history.json?orderBy="timestamp"&limitToLast=1`);
+
+      es.addEventListener('put', (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (!payload) return;
+
+          let item = null;
+          if (payload.data) {
+            if (payload.data.buy && payload.data.sell) {
+              item = payload.data;
+            } else if (typeof payload.data === 'object') {
+              const vals = Object.values(payload.data).filter(x => x && x.buy && x.sell);
+              if (vals.length > 0) {
+                item = vals[vals.length - 1];
+              }
+            }
+          }
+
+          if (item && item.buy && item.sell) {
+            callback({
+              buyingRate: item.buy,
+              sellingRate: item.sell,
+              updatedAt: item.datetime || new Date().toLocaleTimeString('id-ID'),
+              timestamp: item.timestamp,
+              raw: item
+            });
+          }
+        } catch (err) {
+          console.warn('Gagal parsing SSE gold rate:', err);
+        }
+      });
+
+      es.onerror = () => {
+        if (es) {
+          es.close();
+          es = null;
+        }
+        if (!isClosed) {
+          setTimeout(connect, 3000);
+        }
+      };
+    } catch (e) {
+      console.warn('Gagal inisialisasi EventSource Firebase:', e);
+    }
+  };
+
+  connect();
+
+  return () => {
+    isClosed = true;
+    if (es) {
+      es.close();
+      es = null;
+    }
+  };
 };
 
 // Fetch Gold History from Firebase
