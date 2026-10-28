@@ -1711,7 +1711,30 @@ body {
 /* Responsive Media Queries */
 @media (max-width: 1200px) {
   .dashboard-grid {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .column-main,
+  .column-aside {
+    display: contents;
+  }
+
+  .antigrvty-card {
+    order: 1;
+  }
+
+  .tradingview-card {
+    order: 2;
+  }
+
+  .column-main > *:not(.antigrvty-card) {
+    order: 3;
+  }
+
+  .column-aside > *:not(.tradingview-card) {
+    order: 4;
   }
 
   .mini-stats-grid {

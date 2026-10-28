@@ -112,11 +112,17 @@ export default function App() {
 
       // Peringatan suara jika pasar live dan suara aktif
       if (soundEnabledRef.current && isMarketOpen() === 'PASAR LIVE') {
-        if (delta > 0) {
-          speakId('Harga naik');
+        if (delta >= 5000) {
+          speakId('Jackpot, Harga Naik');
+          playBeep(1200, 0.3);
+        } else if (delta >= 2000) {
+          speakId('Fantastis, Harga Naik');
+          playBeep(1050, 0.25);
+        } else if (delta >= 1 || delta > 0) {
+          speakId('Harga Naik');
           playBeep(980, 0.2);
-        } else if (delta < 0) {
-          speakId('Harga turun');
+        } else {
+          speakId('Harga Turun');
           playBeep(440, 0.2);
         }
       }
