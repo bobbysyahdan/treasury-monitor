@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Volume2, VolumeX, Bell, Radio, ArrowUp, ArrowDown, Activity, Sparkles } from 'lucide-react';
-import { formatRupiah, formatNumber, isMarketOpen } from '../services/api';
+import { formatRupiah, formatNumber, isMarketOpen, speakId, playBeep } from '../services/api';
 
 export default function AntigrvtyLiveCard({
   liveBuy,
@@ -48,15 +48,30 @@ export default function AntigrvtyLiveCard({
     }
   }, [liveSell, prevSell]);
 
-  // Siap-siap timer check (runs around :55s to :59s of each minute)
+  const soundEnabledRef = useRef(soundEnabled);
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  const hasPlayedSiapSiap = useRef(false);
+
+  // Siap-siap timer check (runs around :54s to :59s of each minute)
   useEffect(() => {
     const checkSeconds = () => {
       const now = new Date();
       const sec = now.getSeconds();
       if (sec >= 54 && sec <= 59 && isMarketOpen() === 'PASAR LIVE') {
         setShowSiapSiap(true);
+        if (!hasPlayedSiapSiap.current) {
+          hasPlayedSiapSiap.current = true;
+          if (soundEnabledRef.current) {
+            speakId('Siap-siap');
+            playBeep(750, 0.2);
+          }
+        }
       } else {
         setShowSiapSiap(false);
+        hasPlayedSiapSiap.current = false;
       }
     };
     const interval = setInterval(checkSeconds, 1000);

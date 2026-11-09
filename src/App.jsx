@@ -81,7 +81,7 @@ export default function App() {
     try {
       sessionStorage.setItem('cuanmania_sound', nextVal ? '1' : '0');
       localStorage.setItem('cuanmania_sound', nextVal ? '1' : '0');
-    } catch {}
+    } catch { }
     if (nextVal) {
       speakId('Suara aktif');
       playBeep(880, 0.15);
@@ -113,14 +113,20 @@ export default function App() {
       // Peringatan suara jika pasar live dan suara aktif
       if (soundEnabledRef.current && isMarketOpen() === 'PASAR LIVE') {
         if (delta >= 5000) {
-          speakId('Jackpot, Harga Naik');
+          speakId('Alhamdulillah Jackpot, Harga Naik');
           playBeep(1200, 0.3);
         } else if (delta >= 2000) {
           speakId('Fantastis, Harga Naik');
           playBeep(1050, 0.25);
-        } else if (delta >= 1 || delta > 0) {
+        } else if (delta > 0) {
           speakId('Harga Naik');
           playBeep(980, 0.2);
+        } else if (delta <= -5000) {
+          speakId('Junam Parah, Harga Turun');
+          playBeep(320, 0.3);
+        } else if (delta <= -2000) {
+          speakId('Waduh Hati-Hati, Harga Turun');
+          playBeep(380, 0.25);
         } else {
           speakId('Harga Turun');
           playBeep(440, 0.2);
